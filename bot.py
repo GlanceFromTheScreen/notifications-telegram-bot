@@ -10,13 +10,67 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import TOKEN_API
 from sqlite import db_start, create_user_notifications_table, add_notification_in_table, get_undone_tasks,\
-    get_done_tasks, get_task_by_number, update_notification_field, delete_notification_field
+    get_done_tasks, get_task_by_number, update_notification_field, delete_notification_field, get_used_ids,\
+    update_notification_field_by_number, get_unsent_tasks
 import datetime
 from datetime import timedelta
+import aioschedule
+import asyncio
+
+
+async def scheduler():
+    aioschedule.every(0.05).minutes.do(notification_function)
+    while True:
+        await aioschedule.run_pending()
+        await asyncio.sleep(0.05)
+
+
+def add_days(date, add_type):
+    date0 = datetime.datetime.strptime(str(date), "%d/%m/%Y").date()
+    if add_type == 1:
+        date = date0 + timedelta(days=1)
+    if add_type == 2:
+        date = date0 + timedelta(days=7)
+    if add_type == 3:
+        date = date0 + timedelta(days=30)
+
+    date = str(date)
+    if '-' in date:
+        date = date.replace('-', '/')
+        date = date.split('/')
+        date.reverse()
+        date = '/'.join(date)
+        date = str(date)
+
+    return date
+
+
+def check_for_notification(date, project_time):
+    if date:
+        if '-' in date:
+            date = date.replace('-', '/')
+            date = date.split('/')
+            date.reverse()
+            date = '/'.join(date)
+            date = str(date)
+
+        d1 = datetime.datetime.strptime(date, "%d/%m/%Y").date()
+        d2 = datetime.datetime.now().date()
+
+        t1 = datetime.datetime.strptime(project_time, '%H:%M').time()
+
+        current_date_time = datetime.datetime.now()
+        t2 = current_date_time.time()
+
+        if d2 >= d1 and t2 >= t1:
+            return True
+        else:
+            return False
 
 
 async def on_startup(_):
     await db_start()
+    asyncio.create_task(scheduler())
 
 
 storage = MemoryStorage()
@@ -41,6 +95,7 @@ class UpdateNotificationsStateGroup(StatesGroup):
     calendar = State()
     time = State()
     file = State()
+    periodic = State()
 
 
 def get_main_kb() -> ReplyKeyboardMarkup:
@@ -66,7 +121,7 @@ def get_what_to_change_kb() -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(KeyboardButton('Описание'), KeyboardButton('Файлы')) \
         .add(KeyboardButton('Дата'), KeyboardButton('Время')) \
-        .add(KeyboardButton('Отметить как выполненное'), KeyboardButton('Добавить / снять периодичность')) \
+        .add(KeyboardButton('Отметить как выполненное'), KeyboardButton('Изменить периодичность')) \
         .add(KeyboardButton('Удалить напоминание'), KeyboardButton('Вернуться в главное меню'))
 
     return kb
@@ -97,7 +152,6 @@ def get_ikb_with_notifications(list_of_notifications: list) -> InlineKeyboardMar
         ikb.add(InlineKeyboardButton(text=f'{noty}',
                                      callback_data=f'{list_of_notifications[i][0]}'))
     return ikb
-
 
 
 #  обработчик первой команды start
@@ -256,7 +310,27 @@ async def update_description(message: types.Message) -> None:
 @dp.message_handler(content_types=['text'], state=UpdateNotificationsStateGroup.description)
 async def save_update_description(message: types.Message, state: FSMContext) -> None:
     await update_notification_field(state, user_id=message.from_user.id, field_data=message.text, field_name='description')
+    #  после обновления напоминания его надо будет отправить еще раз
+    await update_notification_field(state, user_id=message.from_user.id, field_data=0, field_name='is_Sent')
     await message.reply("Новое описание успешно сохранено",
+                        reply_markup=get_main_kb())
+    await state.finish()
+
+
+#  обновляем описание
+@dp.message_handler(Text(equals="Изменить периодичность"), state=UpdateNotificationsStateGroup.what_to_change)
+async def update_periodic(message: types.Message) -> None:
+    await message.reply("Введите тип периодичности",
+                        reply_markup=get_cancel_kb())
+    await UpdateNotificationsStateGroup.periodic.set()  # установили состояние описания
+
+
+@dp.message_handler(content_types=['text'], state=UpdateNotificationsStateGroup.periodic)
+async def save_update_periodic(message: types.Message, state: FSMContext) -> None:
+    await update_notification_field(state, user_id=message.from_user.id, field_data=int(message.text), field_name='period_type')
+    #  после обновления напоминания его надо будет отправить еще раз
+    await update_notification_field(state, user_id=message.from_user.id, field_data=0, field_name='is_Sent')
+    await message.reply("Периодичность обновлена",
                         reply_markup=get_main_kb())
     await state.finish()
 
@@ -276,6 +350,8 @@ async def save_update_calendar(callback_query: CallbackQuery, callback_data: dic
     new_date = date.strftime("%d/%m/%Y")
     if selected:
         await update_notification_field(state, user_id=callback_query.from_user.id, field_data=new_date, field_name='calendar')
+        #  после обновления напоминания его надо будет отправить еще раз
+        await update_notification_field(state, user_id=callback_query.from_user.id, field_data=0, field_name='is_Sent')
         await callback_query.message.answer(
             f'Вы изменили дату: {date.strftime("%d/%m/%Y")}',
             reply_markup=get_main_kb()
@@ -294,6 +370,8 @@ async def update_time(message: types.Message) -> None:
 @dp.message_handler(content_types=['text'], state=UpdateNotificationsStateGroup.time)
 async def save_update_time(message: types.Message, state: FSMContext) -> None:
     await update_notification_field(state, user_id=message.from_user.id, field_data=message.text, field_name='time')
+    #  после обновления напоминания его надо будет отправить еще раз
+    await update_notification_field(state, user_id=message.from_user.id, field_data=0, field_name='is_Sent')
     await message.reply("Новое время успешно сохранено",
                         reply_markup=get_main_kb())
     await state.finish()
@@ -303,6 +381,8 @@ async def save_update_time(message: types.Message, state: FSMContext) -> None:
 @dp.message_handler(Text(equals="Отметить как выполненное"), state=UpdateNotificationsStateGroup.what_to_change)
 async def update_is_Done(message: types.Message, state: FSMContext) -> None:
     await update_notification_field(state, user_id=message.from_user.id, field_data=1, field_name='is_Done')
+    #  сделанные дела, даже если их время и не пришло, отправлять уже не нужно
+    await update_notification_field(state, user_id=message.from_user.id, field_data=1, field_name='is_Sent')
     await message.reply("Задача выполнена",
                         reply_markup=get_main_kb())
     await state.finish()
@@ -344,12 +424,43 @@ async def callback_check_done_tasks(callback: types.CallbackQuery, state: FSMCon
     #  записываем номер выбранного пользователем сообщение (номер = id в бд)
     async with state.proxy() as data:
         data['notification_number'] = notification_number
-
     await update_notification_field(state, user_id=callback.from_user.id, field_data=0, field_name='is_Done')
+    #  вернули дело в невыполненные => его еще предстоит отправить
+    await update_notification_field(state, user_id=callback.from_user.id, field_data=0, field_name='is_Sent')
     await callback.message.answer(f'Вы изменяете напоминание:\n{notify}\nКакую дату необходимо поставить??',
                                   reply_markup=await SimpleCalendar().start_calendar())
     await UpdateNotificationsStateGroup.calendar.set()
     await callback.answer(f'{notification_number}')
+
+
+'''----- Отправка уведомлений о заплпнированных делах -----'''
+
+
+@dp.message_handler()
+async def notification_function():
+    #выгружаем все задания, которые находятся в статусе "текущие"
+    users = get_used_ids()
+    for user_id in users:
+        tasks = get_unsent_tasks(user_id)
+        for task in tasks:
+            #проверяем не наступила ли дата и время уведомления.
+            if check_for_notification(task[3], task[4]):
+                #если наступило - отправляем уведомление
+                await bot.send_message(chat_id=user_id, text=f"У вас запланировано важное дело - {task[2]}")
+                #флажок, проверка на "периодичность дела"
+                if task[6] == 0:
+                    #если дело не переодическое то заменяем стус "в ожидании" на "отправлено"
+                    await update_notification_field_by_number(number=task[0], user_id=user_id, field_data=1,
+                                                              field_name='is_Sent')
+                else:
+                    #вычисляем новую дату для уведомления у периодических дел
+                    # date_culc = select_date_task_for_periodic(task[0], task[1])
+                    new_date = add_days(task[3], task[6])
+                    await update_notification_field_by_number(number=task[0], user_id=user_id, field_data=new_date,
+                                                              field_name='calendar')
+                    # #обнавляем дату периодического дела
+                    # await update_date_task_for_pereodic(task[0], task[1], res_date)
+
 
 
 if __name__ == '__main__':
