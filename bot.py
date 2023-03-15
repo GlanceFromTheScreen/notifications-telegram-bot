@@ -10,7 +10,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import TOKEN_API
 from sqlite import db_start, create_user_notifications_table, add_notification_in_table, get_undone_tasks,\
-    get_done_tasks, get_task_by_number
+    get_done_tasks, get_task_by_number, update_notification_field, delete_notification_field
+import datetime
+from datetime import timedelta
 
 
 async def on_startup(_):
@@ -32,12 +34,13 @@ class NotificationStatesGroup(StatesGroup):
 
 
 class UpdateNotificationsStateGroup(StatesGroup):
+    actual_tasks = State()
+    done_tasks = State()
     what_to_change = State()
     description = State()
     calendar = State()
     time = State()
     file = State()
-
 
 
 def get_main_kb() -> ReplyKeyboardMarkup:
@@ -61,10 +64,21 @@ def get_what_to_change_kb() -> ReplyKeyboardMarkup:
     :return:
     """
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('Описание')) \
-        .add(KeyboardButton('Дата')) \
-        .add(KeyboardButton('Время')) \
-        .add(KeyboardButton('Отметить как выполненное')) \
+    kb.add(KeyboardButton('Описание'), KeyboardButton('Файлы')) \
+        .add(KeyboardButton('Дата'), KeyboardButton('Время')) \
+        .add(KeyboardButton('Отметить как выполненное'), KeyboardButton('Добавить / снять периодичность')) \
+        .add(KeyboardButton('Удалить напоминание'), KeyboardButton('Вернуться в главное меню'))
+
+    return kb
+
+
+def get_done_tasks_kb() -> ReplyKeyboardMarkup:
+    """
+    фабрика клавиатуры главного меню
+    :return:
+    """
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton('Вернуть дело в незавершенное'), KeyboardButton('Вернуться в главное меню'))
 
     return kb
 
@@ -185,10 +199,10 @@ async def check_actual_tasks(message: types.Message) -> None:
         await bot.send_message(message.chat.id, 'Список выполненных дел пуст')
     else:
         await bot.send_message(message.chat.id, '<b>Ваши завершенные дела:</b>\n\n' + done_tasks,
-                               parse_mode=types.ParseMode.HTML)
+                               parse_mode=types.ParseMode.HTML, reply_markup=get_done_tasks_kb())
 
 
-'----- Редактор напоминаний -----'
+'----- Редактор текущих напоминаний -----'
 
 
 @dp.message_handler(Text(equals="Редактировать текущие дела"))
@@ -202,29 +216,140 @@ async def check_actual_tasks(message: types.Message) -> None:
     if num == 1:
         await bot.send_message(message.chat.id, 'Список текущих дел пуст')
     else:
+        await UpdateNotificationsStateGroup.actual_tasks.set()
         await bot.send_message(message.chat.id, '<b>Какое из текущих дел вы хотите отредактировать?</b>',
                                parse_mode=types.ParseMode.HTML,
                                reply_markup=get_ikb_with_notifications(undone_tasks))
 
 
-@dp.callback_query_handler()
-async def callback_check_actual_tasks(callback: types.CallbackQuery):
+
+@dp.callback_query_handler(state=UpdateNotificationsStateGroup.actual_tasks)
+async def callback_check_actual_tasks(callback: types.CallbackQuery, state: FSMContext):
     notification_number = callback.data  # Это номер нужной нам строки в таблице
     notify = get_task_by_number(callback.from_user.id, notification_number)
-    print(notify)
+    #  записываем номер выбранного пользователем сообщение (номер = id в бд)
+    async with state.proxy() as data:
+        data['notification_number'] = notification_number
+
     await callback.message.answer(f'Вы изменяете напоминание:\n{notify}\nЧто именно вы ходите изменить?',
                                   reply_markup=get_what_to_change_kb())
     await UpdateNotificationsStateGroup.what_to_change.set()
     await callback.answer(f'{notification_number}')
 
 
-# #  обработчик команды "Добавить напонинание"
-# @dp.message_handler(Text(equals="Добавить напоминание"))
-# async def cmd_add_notify(message: types.Message) -> None:
-#     """Обработчик сообщения Добавить напоминание"""
-#     await message.reply("Введите текст напоминания",
-#                         reply_markup=get_cancel_kb())
-#     await NotificationStatesGroup.description.set()  # установили состояние описания
+#  возвращаемся в главное меню
+@dp.message_handler(Text(equals="Вернуться в главное меню"), state='*')
+async def back_to_main_menu(message: types.Message, state: FSMContext) -> None:
+    await message.reply("Вы вернулись в главное меню",
+                        reply_markup=get_main_kb())
+    await state.finish()
+
+
+#  обновляем описание
+@dp.message_handler(Text(equals="Описание"), state=UpdateNotificationsStateGroup.what_to_change)
+async def update_description(message: types.Message) -> None:
+    await message.reply("Введите новое описание для нопоминания",
+                        reply_markup=get_cancel_kb())
+    await UpdateNotificationsStateGroup.description.set()  # установили состояние описания
+
+
+@dp.message_handler(content_types=['text'], state=UpdateNotificationsStateGroup.description)
+async def save_update_description(message: types.Message, state: FSMContext) -> None:
+    await update_notification_field(state, user_id=message.from_user.id, field_data=message.text, field_name='description')
+    await message.reply("Новое описание успешно сохранено",
+                        reply_markup=get_main_kb())
+    await state.finish()
+
+
+#  обновляем календарную дату
+@dp.message_handler(Text(equals="Дата"), state=UpdateNotificationsStateGroup.what_to_change)
+async def update_description(message: types.Message) -> None:
+    await message.reply("Введите новую дату для нопоминания",
+                        reply_markup=await SimpleCalendar().start_calendar())
+    await UpdateNotificationsStateGroup.calendar.set()  # установили состояние описания
+
+
+#  callback календаря!
+@dp.callback_query_handler(simple_cal_callback.filter(), state=UpdateNotificationsStateGroup.calendar)
+async def save_update_calendar(callback_query: CallbackQuery, callback_data: dict, state: FSMContext):
+    selected, date = await SimpleCalendar().process_selection(callback_query, callback_data)
+    new_date = date.strftime("%d/%m/%Y")
+    if selected:
+        await update_notification_field(state, user_id=callback_query.from_user.id, field_data=new_date, field_name='calendar')
+        await callback_query.message.answer(
+            f'Вы изменили дату: {date.strftime("%d/%m/%Y")}',
+            reply_markup=get_main_kb()
+        )
+    await state.finish()
+
+
+#  обновляем время
+@dp.message_handler(Text(equals="Время"), state=UpdateNotificationsStateGroup.what_to_change)
+async def update_time(message: types.Message) -> None:
+    await message.reply("Введите новое время для нопоминания",
+                        reply_markup=get_cancel_kb())
+    await UpdateNotificationsStateGroup.time.set()  # установили состояние описания
+
+
+@dp.message_handler(content_types=['text'], state=UpdateNotificationsStateGroup.time)
+async def save_update_time(message: types.Message, state: FSMContext) -> None:
+    await update_notification_field(state, user_id=message.from_user.id, field_data=message.text, field_name='time')
+    await message.reply("Новое время успешно сохранено",
+                        reply_markup=get_main_kb())
+    await state.finish()
+
+
+#  отмечаем как выполненное
+@dp.message_handler(Text(equals="Отметить как выполненное"), state=UpdateNotificationsStateGroup.what_to_change)
+async def update_is_Done(message: types.Message, state: FSMContext) -> None:
+    await update_notification_field(state, user_id=message.from_user.id, field_data=1, field_name='is_Done')
+    await message.reply("Задача выполнена",
+                        reply_markup=get_main_kb())
+    await state.finish()
+
+
+#  удаляем напоминание
+@dp.message_handler(Text(equals="Удалить напоминание"), state=UpdateNotificationsStateGroup.what_to_change)
+async def back_to_main_menu(message: types.Message, state: FSMContext) -> None:
+    await delete_notification_field(state, user_id=message.from_user.id)
+    await message.reply("Вы удалили напоминание",
+                        reply_markup=get_main_kb())
+    await state.finish()
+
+
+'''----- Редактор завершенных напоминаний-----'''
+
+
+@dp.message_handler(Text(equals="Вернуть дело в незавершенное"))
+async def check_done_tasks(message: types.Message) -> None:
+    done_tasks = []
+    tasks = get_done_tasks(message.from_user.id)
+    num = 1
+    for task in tasks:
+        done_tasks.append([f"{task[0]}", f"{task[3]}, ", f"{task[4]}, ", f"{task[2]}"])
+        num = num + 1
+    if num == 1:
+        await bot.send_message(message.chat.id, 'Список выполненных дел пуст')
+    else:
+        await bot.send_message(message.chat.id, '<b>Какое из выполненных дел вы хотите вернуть?</b>',
+                               parse_mode=types.ParseMode.HTML,
+                               reply_markup=get_ikb_with_notifications(done_tasks))
+    await UpdateNotificationsStateGroup.done_tasks.set()
+
+
+@dp.callback_query_handler(state=UpdateNotificationsStateGroup.done_tasks)
+async def callback_check_done_tasks(callback: types.CallbackQuery, state: FSMContext):
+    notification_number = callback.data  # Это номер нужной нам строки в таблице
+    notify = get_task_by_number(callback.from_user.id, notification_number)
+    #  записываем номер выбранного пользователем сообщение (номер = id в бд)
+    async with state.proxy() as data:
+        data['notification_number'] = notification_number
+
+    await update_notification_field(state, user_id=callback.from_user.id, field_data=0, field_name='is_Done')
+    await callback.message.answer(f'Вы изменяете напоминание:\n{notify}\nКакую дату необходимо поставить??',
+                                  reply_markup=await SimpleCalendar().start_calendar())
+    await UpdateNotificationsStateGroup.calendar.set()
+    await callback.answer(f'{notification_number}')
 
 
 if __name__ == '__main__':
