@@ -38,6 +38,12 @@ def get_used_ids():
     return ids
 
 
+def get_last_notification(user_id):
+    last = cur.execute("SELECT * FROM '{user_id}_notifications' ORDER BY id DESC LIMIT 1"
+                       .format(user_id=user_id)).fetchone()
+    return last
+
+
 def get_undone_tasks(user_id):
     done_tasks = cur.execute("SELECT * FROM '{user_id}_notifications' WHERE  is_Done = 0 ORDER BY calendar"
                              .format(user_id=user_id)).fetchall()

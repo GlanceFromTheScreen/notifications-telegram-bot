@@ -9,13 +9,15 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import TOKEN_API
-from sqlite import db_start, create_user_notifications_table, add_notification_in_table, get_undone_tasks,\
-    get_done_tasks, get_task_by_number, update_notification_field, delete_notification_field, get_used_ids,\
-    update_notification_field_by_number, get_unsent_tasks
+from sqlite import db_start, create_user_notifications_table, add_notification_in_table, get_undone_tasks, \
+    get_done_tasks, get_task_by_number, update_notification_field, delete_notification_field, get_used_ids, \
+    update_notification_field_by_number, get_unsent_tasks, get_last_notification
 import datetime
 from datetime import timedelta
 import aioschedule
 import asyncio
+
+from google_drive import create_folder_in_folder, is_directory_or_file_exists, upload_file
 
 
 async def scheduler():
@@ -104,11 +106,18 @@ def get_main_kb() -> ReplyKeyboardMarkup:
     :return:
     """
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('Добавить напоминание')) \
-        .add(KeyboardButton('Редактировать текущие дела')) \
-        .add(KeyboardButton('Посмотреть запланированные дела')) \
-        .add(KeyboardButton('Посмотреть завершенные дела')) \
-        .add(KeyboardButton('/create'))
+    kb.add(KeyboardButton('Добавить напоминание'), KeyboardButton('Редактировать текущие дела')) \
+        .add(KeyboardButton('Посмотреть запланированные дела'), KeyboardButton('Посмотреть завершенные дела'))
+    return kb
+
+
+def get_file_kb() -> ReplyKeyboardMarkup:
+    """
+    фабрика клавиатуры главного меню
+    :return:
+    """
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton('Файлы не требуются'))
 
     return kb
 
@@ -174,7 +183,6 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
                         reply_markup=get_main_kb())
 
 
-
 """-----ветка про добавление напоминания-----"""
 
 
@@ -195,7 +203,7 @@ async def load_description(message: types.Message, state: FSMContext) -> None:
 
     await message.answer("Теперь выберите дату: ",
                          reply_markup=await SimpleCalendar().start_calendar())
-    await NotificationStatesGroup.next()
+    await NotificationStatesGroup.calendar.set()
 
 
 # обработчик календаря (callback!)
@@ -209,7 +217,7 @@ async def load_calendar(callback_query: CallbackQuery, callback_data: dict, stat
             f'Вы выбрали дату: {date.strftime("%d/%m/%Y")} \n Теперь введите время',
             reply_markup=get_cancel_kb()
         )
-    await NotificationStatesGroup.next()
+    await NotificationStatesGroup.time.set()
 
 
 #  обработчик времени
@@ -218,8 +226,52 @@ async def load_time(message: types.Message, state: FSMContext) -> None:
     async with state.proxy() as data:
         data['time'] = message.text
 
+    #  добавляем запись в таблицу на этом этапе! Тогда устанавливается и номер в бд
     await add_notification_in_table(state, user_id=message.from_user.id)
-    await message.reply('Ваша акнета успешно создана!', reply_markup=get_main_kb())
+    # await message.reply('Напоминание слоздано!', reply_markup=get_main_kb())
+    # await state.finish()
+    await message.reply('Время зафиксировано! Теперь добавьте файлы', reply_markup=get_file_kb())
+    await NotificationStatesGroup.file.set()
+
+
+#  обработчик отсутствия файлов
+@dp.message_handler(Text(equals="Файлы не требуются"), state=NotificationStatesGroup.file)
+async def load_no_file(message: types.Message, state: FSMContext) -> None:
+    # await add_notification_in_table(state, user_id=message.from_user.id)  # это здесь уже не нужно, получается
+    await message.reply('Напоминание слоздано!', reply_markup=get_main_kb())
+    await state.finish()
+
+
+# обработчик файлов: загрузка их сначала в локальную директорию
+'''
+1) файл добавляется в локальную директорию в папку files/id
+2) напоминание только создается, пожтому надо создать дир. на диске: files/id/notification_id
+3) добавляем в нее файл
+'''
+@dp.message_handler(content_types=types.ContentTypes.DOCUMENT, state=NotificationStatesGroup.file)
+async def load_file(message: types.Message, state: FSMContext) -> None:
+    if document := message.document:
+        await document.download(
+            # destination_dir=f"files/{message.from_user.id}",
+            destination_file=f"files/{message.from_user.id}/{document.file_name}",
+        )
+    #  если еще ни разу не добавлялиь файлы, то создаем папку с id пользователя
+    if not is_directory_or_file_exists('files', f'{message.from_user.id}'):
+        create_folder_in_folder('files', f'{message.from_user.id}')
+
+    #  создаем папку с id НАПОМИНАНМЯ!
+    this_notify = get_last_notification(message.from_user.id)
+    create_folder_in_folder(f'{message.from_user.id}', f'{this_notify[0]}')
+
+    if not is_directory_or_file_exists(f'{this_notify[0]}', f'{document.file_name}'):
+        upload_file(f'{document.file_name}', f'files/{message.from_user.id}/{this_notify[0]}')
+
+    # создает файл filename в нужной директории на гугл диске
+    # upload_file_on_drive(str(message.from_user.id), data['name'], data['file_name'])
+    # create_folder_in_folder()
+    await bot.send_message(chat_id=message.from_user.id,
+                           text='Успешно! Файл загружен',
+                           reply_markup=get_main_kb())
     await state.finish()
 
 
@@ -276,7 +328,6 @@ async def check_actual_tasks(message: types.Message) -> None:
                                reply_markup=get_ikb_with_notifications(undone_tasks))
 
 
-
 @dp.callback_query_handler(state=UpdateNotificationsStateGroup.actual_tasks)
 async def callback_check_actual_tasks(callback: types.CallbackQuery, state: FSMContext):
     notification_number = callback.data  # Это номер нужной нам строки в таблице
@@ -309,7 +360,8 @@ async def update_description(message: types.Message) -> None:
 
 @dp.message_handler(content_types=['text'], state=UpdateNotificationsStateGroup.description)
 async def save_update_description(message: types.Message, state: FSMContext) -> None:
-    await update_notification_field(state, user_id=message.from_user.id, field_data=message.text, field_name='description')
+    await update_notification_field(state, user_id=message.from_user.id, field_data=message.text,
+                                    field_name='description')
     #  после обновления напоминания его надо будет отправить еще раз
     await update_notification_field(state, user_id=message.from_user.id, field_data=0, field_name='is_Sent')
     await message.reply("Новое описание успешно сохранено",
@@ -327,7 +379,8 @@ async def update_periodic(message: types.Message) -> None:
 
 @dp.message_handler(content_types=['text'], state=UpdateNotificationsStateGroup.periodic)
 async def save_update_periodic(message: types.Message, state: FSMContext) -> None:
-    await update_notification_field(state, user_id=message.from_user.id, field_data=int(message.text), field_name='period_type')
+    await update_notification_field(state, user_id=message.from_user.id, field_data=int(message.text),
+                                    field_name='period_type')
     #  после обновления напоминания его надо будет отправить еще раз
     await update_notification_field(state, user_id=message.from_user.id, field_data=0, field_name='is_Sent')
     await message.reply("Периодичность обновлена",
@@ -349,7 +402,8 @@ async def save_update_calendar(callback_query: CallbackQuery, callback_data: dic
     selected, date = await SimpleCalendar().process_selection(callback_query, callback_data)
     new_date = date.strftime("%d/%m/%Y")
     if selected:
-        await update_notification_field(state, user_id=callback_query.from_user.id, field_data=new_date, field_name='calendar')
+        await update_notification_field(state, user_id=callback_query.from_user.id, field_data=new_date,
+                                        field_name='calendar')
         #  после обновления напоминания его надо будет отправить еще раз
         await update_notification_field(state, user_id=callback_query.from_user.id, field_data=0, field_name='is_Sent')
         await callback_query.message.answer(
@@ -438,29 +492,28 @@ async def callback_check_done_tasks(callback: types.CallbackQuery, state: FSMCon
 
 @dp.message_handler()
 async def notification_function():
-    #выгружаем все задания, которые находятся в статусе "текущие"
+    # выгружаем все задания, которые находятся в статусе "текущие"
     users = get_used_ids()
     for user_id in users:
         tasks = get_unsent_tasks(user_id)
         for task in tasks:
-            #проверяем не наступила ли дата и время уведомления.
+            # проверяем не наступила ли дата и время уведомления.
             if check_for_notification(task[3], task[4]):
-                #если наступило - отправляем уведомление
+                # если наступило - отправляем уведомление
                 await bot.send_message(chat_id=user_id, text=f"У вас запланировано важное дело - {task[2]}")
-                #флажок, проверка на "периодичность дела"
+                # флажок, проверка на "периодичность дела"
                 if task[6] == 0:
-                    #если дело не переодическое то заменяем стус "в ожидании" на "отправлено"
+                    # если дело не переодическое то заменяем стус "в ожидании" на "отправлено"
                     await update_notification_field_by_number(number=task[0], user_id=user_id, field_data=1,
                                                               field_name='is_Sent')
                 else:
-                    #вычисляем новую дату для уведомления у периодических дел
+                    # вычисляем новую дату для уведомления у периодических дел
                     # date_culc = select_date_task_for_periodic(task[0], task[1])
                     new_date = add_days(task[3], task[6])
                     await update_notification_field_by_number(number=task[0], user_id=user_id, field_data=new_date,
                                                               field_name='calendar')
                     # #обнавляем дату периодического дела
                     # await update_date_task_for_pereodic(task[0], task[1], res_date)
-
 
 
 if __name__ == '__main__':
