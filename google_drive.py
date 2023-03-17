@@ -26,36 +26,7 @@ def create_folder_in_folder(root_folder, new_folder):
             create_folder(folder['id'], new_folder, drive)
 
 
-def upload_file(file, input_directory, out_path):
-    try:
-        drive = GoogleDrive(gauth)
-        my_file = drive.CreateFile({'title': f'{out_path}/{file}'})  # создаем файл на диске
-        my_file.SetContentFile(f'{input_directory}/{file}')  # присваиваем выгружаемому файлу значение нашего файла
-        my_file.Upload()
-
-    except Exception as _ex:
-        return 'Error in file upload'
-
-
 def is_directory_or_file_exists(root_folder, check_folder_or_file):
-    drive = GoogleDrive(gauth)
-
-    root_folder_id = ''
-    folders = drive.ListFile(
-        {
-            'q': "title='" + root_folder + "' and mimeType='application/vnd.google-apps.folder' and trashed=false"}).GetList()
-    for folder in folders:
-        if folder['title'] == root_folder:
-            root_folder_id = folder['id']
-
-    folders = drive.ListFile({'q': "\'" + root_folder_id + "\'" + " in parents and trashed=false"}).GetList()
-    for folder in folders:
-        if folder['title'] == check_folder_or_file:
-            my_file = drive.CreateFile({'parents': [{'id': fileID}]})  # создаем файл на диске
-    return False
-
-
-def upload_file_2(root_folder, check_folder_or_file):
     drive = GoogleDrive(gauth)
 
     root_folder_id = ''
@@ -73,8 +44,90 @@ def upload_file_2(root_folder, check_folder_or_file):
     return False
 
 
+def upload_file(root_folder1, root_folder2, local_path, filename):
+    drive = GoogleDrive(gauth)
+
+    root_folder_id = ''
+    folders = drive.ListFile(
+        {
+            'q': "title='" + root_folder1 + "' and mimeType='application/vnd.google-apps.folder' and trashed=false"}).GetList()
+    for folder in folders:
+        if folder['title'] == root_folder1:
+            root_folder_id = folder['id']
+
+    folders = drive.ListFile({'q': "\'" + root_folder_id + "\'" + " in parents and trashed=false"}).GetList()
+    for folder in folders:
+        if folder['title'] == root_folder2:
+            my_file = drive.CreateFile({'title': f'{filename}', 'parents': [{'id': folder['id']}]})  # создаем файл на диске
+            my_file.SetContentFile(local_path)
+            my_file.Upload()
+            break
+
+
+def get_list_of_files(user_id, notify_number):
+    drive = GoogleDrive(gauth)
+    fileID = ''
+    fileList = drive.ListFile({'q': f"'root' in parents and trashed=false"}).GetList()
+    for file in fileList:
+        if (file['title'] == "files"):
+            fileID = file['id']
+            break
+    str = "\'" + fileID + "\'" + " in parents and trashed=false"
+
+    file_list = drive.ListFile({'q': str}).GetList()
+    for file in file_list:
+        if (file['title'] == f"{user_id}"):
+            fileID = file['id']
+            break
+    str = "\'" + fileID + "\'" + " in parents and trashed=false"
+
+    file_list = drive.ListFile({'q': str}).GetList()
+    for file in file_list:
+        if (file['title'] == f"{notify_number}"):
+            fileID = file['id']
+            break
+    str = "\'" + fileID + "\'" + " in parents and trashed=false"  # указывает папку 9
+
+    file_list = drive.ListFile({'q': str}).GetList()
+
+    for index, file in enumerate(file_list):
+        file.GetContentFile('files/' + f'{user_id}/' + file['title'])
+
+    titles_list = []
+    for file in file_list:
+        titles_list.append(file['title'])
+
+    return titles_list
+
+
+def delete_files_from_google_disk(root_folder1, root_folder2, deliting_file):
+    drive = GoogleDrive(gauth)
+    root_folder_id = ''
+    folders = drive.ListFile(
+        {
+            'q': "title='" + root_folder1 + "' and mimeType='application/vnd.google-apps.folder' and trashed=false"}).GetList()
+    for folder in folders:
+        if folder['title'] == root_folder1:
+            root_folder_id = folder['id']
+
+    folders = drive.ListFile({'q': "\'" + root_folder_id + "\'" + " in parents and trashed=false"}).GetList()
+    for folder in folders:
+        if folder['title'] == root_folder2:
+            root_folder_id = folder['id']
+
+    folders = drive.ListFile({'q': "\'" + root_folder_id + "\'" + " in parents and trashed=false"}).GetList()
+    for folder in folders:
+        if folder['title'] == deliting_file:
+            file1 = drive.CreateFile({'id': folder['id']})
+            file1.Trash()  # убираем файл в карзину
+    return False
+
+
 # create_folder('root', 'cat2', GoogleDrive(gauth))
 # create_folder_in_folder('1', '6')
-upload_file('mish.png', 'files/497684582', 'files/497684582')
+# upload_file('mish.png', 'files/497684582', 'files/497684582')
 # is_directory_or_file_exists('files', 'mdDinRxBMko.jpg')
-
+# upload_file('497684582', '9', 'files/497684582/mish.png')
+# l = get_list_of_files('497684582', '12')
+# print(l)
+# delete_files_from_google_disk('497684582', '17', 'readme.md')

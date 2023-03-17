@@ -5,7 +5,7 @@ from aiogram.dispatcher.filters.state import StatesGroup, State
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.dispatcher.filters import Text
 from aiogram_calendar import simple_cal_callback, SimpleCalendar
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InputFile
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import TOKEN_API
@@ -17,7 +17,11 @@ from datetime import timedelta
 import aioschedule
 import asyncio
 
-from google_drive import create_folder_in_folder, is_directory_or_file_exists, upload_file
+from google_drive import create_folder_in_folder, is_directory_or_file_exists, upload_file, get_list_of_files, \
+    delete_files_from_google_disk
+
+import os
+
 
 
 async def scheduler():
@@ -123,15 +127,19 @@ def get_file_kb() -> ReplyKeyboardMarkup:
 
 
 def get_what_to_change_kb() -> ReplyKeyboardMarkup:
-    """
-    фабрика клавиатуры главного меню
-    :return:
-    """
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(KeyboardButton('Описание'), KeyboardButton('Файлы')) \
         .add(KeyboardButton('Дата'), KeyboardButton('Время')) \
         .add(KeyboardButton('Отметить как выполненное'), KeyboardButton('Изменить периодичность')) \
         .add(KeyboardButton('Удалить напоминание'), KeyboardButton('Вернуться в главное меню'))
+
+    return kb
+
+
+def get_files_update_kb() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton('Добавить новый'), KeyboardButton('Удалить имеющийся')) \
+        .add(KeyboardButton('Вернуться в главное меню'))
 
     return kb
 
@@ -163,11 +171,25 @@ def get_ikb_with_notifications(list_of_notifications: list) -> InlineKeyboardMar
     return ikb
 
 
+def get_ikb_with_filenames(list_of_files: list) -> InlineKeyboardMarkup:
+    ikb = InlineKeyboardMarkup(row_width=2)
+    for i in range(len(list_of_files)):
+        ikb.add(InlineKeyboardButton(text=f'{list_of_files[i]}',
+                                     callback_data=f'{list_of_files[i]}'))
+    return ikb
+
+
 #  обработчик первой команды start
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message) -> None:
     await message.answer('To-Do List Application!',
                          reply_markup=get_main_kb())
+
+    # #  выгружаем файлы
+    # titles = get_list_of_files('497684582', '13')
+    # # await bot.send_document(message.from_user.id, f'files/{message.from_user.id}/mish.png')
+    # # await message.answer_document(open(f'files/{message.from_user.id}/mish.png', "RB"))
+    # await message.answer_document(InputFile(f'files/{message.from_user.id}/{titles[0]}'))
 
     await create_user_notifications_table(user_id=message.from_user.id)  # см. sqlite - file
 
@@ -255,6 +277,10 @@ async def load_file(message: types.Message, state: FSMContext) -> None:
             # destination_dir=f"files/{message.from_user.id}",
             destination_file=f"files/{message.from_user.id}/{document.file_name}",
         )
+
+    await bot.send_message(chat_id=message.from_user.id,
+                           text='Загружаю файл...')
+
     #  если еще ни разу не добавлялиь файлы, то создаем папку с id пользователя
     if not is_directory_or_file_exists('files', f'{message.from_user.id}'):
         create_folder_in_folder('files', f'{message.from_user.id}')
@@ -264,11 +290,12 @@ async def load_file(message: types.Message, state: FSMContext) -> None:
     create_folder_in_folder(f'{message.from_user.id}', f'{this_notify[0]}')
 
     if not is_directory_or_file_exists(f'{this_notify[0]}', f'{document.file_name}'):
-        upload_file(f'{document.file_name}', f'files/{message.from_user.id}/{this_notify[0]}')
+        # upload_file(f'{document.file_name}', f'files/{message.from_user.id}/{this_notify[0]}')
+        upload_file(f'{message.from_user.id}', f'{this_notify[0]}', f'files/{message.from_user.id}/{document.file_name}', f'{document.file_name}')
 
-    # создает файл filename в нужной директории на гугл диске
-    # upload_file_on_drive(str(message.from_user.id), data['name'], data['file_name'])
-    # create_folder_in_folder()
+    #  удаляем файлы из локальной директории
+    os.remove(f'files/{message.from_user.id}/{document.file_name}')
+
     await bot.send_message(chat_id=message.from_user.id,
                            text='Успешно! Файл загружен',
                            reply_markup=get_main_kb())
@@ -369,7 +396,7 @@ async def save_update_description(message: types.Message, state: FSMContext) -> 
     await state.finish()
 
 
-#  обновляем описание
+#  обновляем периодичность
 @dp.message_handler(Text(equals="Изменить периодичность"), state=UpdateNotificationsStateGroup.what_to_change)
 async def update_periodic(message: types.Message) -> None:
     await message.reply("Введите тип периодичности",
@@ -451,6 +478,78 @@ async def back_to_main_menu(message: types.Message, state: FSMContext) -> None:
     await state.finish()
 
 
+#  редактор файлов
+@dp.message_handler(Text(equals="Файлы"), state=UpdateNotificationsStateGroup.what_to_change)
+async def update_files(message: types.Message) -> None:
+    await message.reply("Что вы хотеите сделать с файлами?",
+                        reply_markup=get_files_update_kb())
+    await UpdateNotificationsStateGroup.file.set()
+
+
+@dp.message_handler(Text(equals="Добавить новый"), state=UpdateNotificationsStateGroup.file)
+async def update_files_new(message: types.Message) -> None:
+    await message.reply("Добавьте файл",
+                        reply_markup=get_main_kb())
+    await UpdateNotificationsStateGroup.file.set()
+
+
+@dp.message_handler(content_types=types.ContentTypes.DOCUMENT, state=UpdateNotificationsStateGroup.file)
+async def update_files_new(message: types.Message, state: FSMContext) -> None:
+    """
+    Тут код почти полностью повторяет код другой функции. Это надо по-хорошему потому убрать
+    """
+    if document := message.document:
+        await document.download(
+            destination_file=f"files/{message.from_user.id}/{document.file_name}",
+        )
+
+    await bot.send_message(chat_id=message.from_user.id,
+                           text='Загружаю файл...')
+
+    #  если еще ни разу не добавлялиь файлы, то создаем папку с id пользователя
+    if not is_directory_or_file_exists('files', f'{message.from_user.id}'):
+        create_folder_in_folder('files', f'{message.from_user.id}')
+
+    async with state.proxy() as data:
+        notification_number = data['notification_number']
+
+    if not is_directory_or_file_exists(f'{message.from_user.id}', f'{notification_number}'):
+        create_folder_in_folder(f'{message.from_user.id}', f'{notification_number}')
+
+    if not is_directory_or_file_exists(f'{notification_number}', f'{document.file_name}'):
+        upload_file(f'{message.from_user.id}', f'{notification_number}',
+                    f'files/{message.from_user.id}/{document.file_name}', f'{document.file_name}')
+
+    #  удаляем файлы из локальной директории
+    os.remove(f'files/{message.from_user.id}/{document.file_name}')
+
+    await bot.send_message(chat_id=message.from_user.id,
+                           text='Успешно! Файл загружен',
+                           reply_markup=get_main_kb())
+    await state.finish()
+
+
+@dp.message_handler(Text(equals="Удалить имеющийся"), state=UpdateNotificationsStateGroup.file)
+async def update_files_delete(message: types.Message, state: FSMContext) -> None:
+    async with state.proxy() as data:
+        notification_number = data['notification_number']
+    await bot.send_message(message.from_user.id, 'Секунду, подгружаем файлы...')
+    list_of_files = get_list_of_files(message.from_user.id, notification_number)
+    await message.reply("Выберите, какой файл вы хотите удалить",
+                        reply_markup=get_ikb_with_filenames(list_of_files))
+    await UpdateNotificationsStateGroup.file.set()
+
+
+@dp.callback_query_handler(state=UpdateNotificationsStateGroup.file)
+async def delete_files_from_disk(callback: CallbackQuery, state: FSMContext):
+    async with state.proxy() as data:
+        notification_number = data['notification_number']
+    await bot.send_message(chat_id=callback.from_user.id, text='Удаляем файл...')
+    delete_files_from_google_disk(f'{callback.from_user.id}', f'{notification_number}', f'{callback.data}')
+    await bot.send_message(chat_id=callback.from_user.id, text='Файл успено удалён!', reply_markup=get_main_kb())
+    await state.finish()
+
+
 '''----- Редактор завершенных напоминаний-----'''
 
 
@@ -500,7 +599,15 @@ async def notification_function():
             # проверяем не наступила ли дата и время уведомления.
             if check_for_notification(task[3], task[4]):
                 # если наступило - отправляем уведомление
+                #  выгружаем файлы
+                titles = get_list_of_files(f'{user_id}', f'{task[0]}')
+
                 await bot.send_message(chat_id=user_id, text=f"У вас запланировано важное дело - {task[2]}")
+
+                for i in range(len(titles)):
+                    await bot.send_document(user_id, (f'{titles[i]}', f'files/{user_id}/{titles[i]}'))
+                    os.remove(f'files/{user_id}/{titles[i]}')  # удаляем из локальной директории
+
                 # флажок, проверка на "периодичность дела"
                 if task[6] == 0:
                     # если дело не переодическое то заменяем стус "в ожидании" на "отправлено"
