@@ -27,6 +27,12 @@ def create_folder_in_folder(root_folder, new_folder):
 
 
 def is_directory_or_file_exists(root_folder, check_folder_or_file):
+    """
+    Применим только к первым двум иерархиям моей архитектуры!!! Далее появляется неоднозначность
+    :param root_folder:
+    :param check_folder_or_file:
+    :return:
+    """
     drive = GoogleDrive(gauth)
 
     root_folder_id = ''
@@ -81,23 +87,27 @@ def get_list_of_files(user_id, notify_number):
             break
     str = "\'" + fileID + "\'" + " in parents and trashed=false"
 
+    fileID2 = ''
     file_list = drive.ListFile({'q': str}).GetList()
     for file in file_list:
         if (file['title'] == f"{notify_number}"):
-            fileID = file['id']
+            fileID2 = file['id']
             break
-    str = "\'" + fileID + "\'" + " in parents and trashed=false"  # указывает папку 9
+    str = "\'" + fileID2 + "\'" + " in parents and trashed=false"  # указывает папку 9
 
-    file_list = drive.ListFile({'q': str}).GetList()
+    if fileID2 != '':
+        file_list = drive.ListFile({'q': str}).GetList()
 
-    for index, file in enumerate(file_list):
-        file.GetContentFile('files/' + f'{user_id}/' + file['title'])
+        for index, file in enumerate(file_list):
+            file.GetContentFile('files/' + f'{user_id}/' + file['title'])
 
-    titles_list = []
-    for file in file_list:
-        titles_list.append(file['title'])
+        titles_list = []
+        for file in file_list:
+            titles_list.append(file['title'])
 
-    return titles_list
+        return titles_list
+    else:
+        return ''
 
 
 def delete_files_from_google_disk(root_folder1, root_folder2, deliting_file):

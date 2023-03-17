@@ -34,7 +34,7 @@ async def add_notification_in_table(state, user_id):
 
 
 def get_used_ids():
-    ids = cur.execute("SELECT * FROM users").fetchone()
+    ids = cur.execute("SELECT * FROM users").fetchall()
     return ids
 
 

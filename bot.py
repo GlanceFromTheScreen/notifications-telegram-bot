@@ -23,7 +23,6 @@ from google_drive import create_folder_in_folder, is_directory_or_file_exists, u
 import os
 
 
-
 async def scheduler():
     aioschedule.every(0.05).minutes.do(notification_function)
     while True:
@@ -155,9 +154,9 @@ def get_done_tasks_kb() -> ReplyKeyboardMarkup:
     return kb
 
 
-def get_cancel_kb() -> ReplyKeyboardMarkup:
+def get_back_kb() -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('/cancel'))
+    kb.add(KeyboardButton('Вернуться в главное меню'))
 
     return kb
 
@@ -194,15 +193,12 @@ async def cmd_start(message: types.Message) -> None:
     await create_user_notifications_table(user_id=message.from_user.id)  # см. sqlite - file
 
 
-#  обработчик команды cancel
-@dp.message_handler(commands=['cancel'], state='*')
-async def cmd_cancel(message: types.Message, state: FSMContext):
-    if state is None:
-        return
-
-    await state.finish()
-    await message.reply('Вы прервали создание анкеты!',
+#  возвращаемся в главное меню
+@dp.message_handler(Text(equals="Вернуться в главное меню"), state='*')
+async def back_to_main_menu(message: types.Message, state: FSMContext) -> None:
+    await message.reply("Вы вернулись в главное меню",
                         reply_markup=get_main_kb())
+    await state.finish()
 
 
 """-----ветка про добавление напоминания-----"""
@@ -213,7 +209,7 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 async def cmd_add_notify(message: types.Message) -> None:
     """Обработчик сообщения Добавить напоминание"""
     await message.reply("Введите текст напоминания",
-                        reply_markup=get_cancel_kb())
+                        reply_markup=get_back_kb())
     await NotificationStatesGroup.description.set()  # установили состояние описания
 
 
@@ -237,7 +233,7 @@ async def load_calendar(callback_query: CallbackQuery, callback_data: dict, stat
     if selected:
         await callback_query.message.answer(
             f'Вы выбрали дату: {date.strftime("%d/%m/%Y")} \n Теперь введите время',
-            reply_markup=get_cancel_kb()
+            reply_markup=get_back_kb()
         )
     await NotificationStatesGroup.time.set()
 
@@ -293,12 +289,16 @@ async def load_file(message: types.Message, state: FSMContext) -> None:
         # upload_file(f'{document.file_name}', f'files/{message.from_user.id}/{this_notify[0]}')
         upload_file(f'{message.from_user.id}', f'{this_notify[0]}', f'files/{message.from_user.id}/{document.file_name}', f'{document.file_name}')
 
-    #  удаляем файлы из локальной директории
-    os.remove(f'files/{message.from_user.id}/{document.file_name}')
+        #  удаляем файлы из локальной директории
+        os.remove(f'files/{message.from_user.id}/{document.file_name}')
 
-    await bot.send_message(chat_id=message.from_user.id,
-                           text='Успешно! Файл загружен',
-                           reply_markup=get_main_kb())
+        await bot.send_message(chat_id=message.from_user.id,
+                               text='Успешно! Файл загружен',
+                               reply_markup=get_main_kb())
+    else:
+        await bot.send_message(chat_id=message.from_user.id,
+                               text='Данный файл уже прикреплен к напоминанию',
+                               reply_markup=get_main_kb())
     await state.finish()
 
 
@@ -363,25 +363,17 @@ async def callback_check_actual_tasks(callback: types.CallbackQuery, state: FSMC
     async with state.proxy() as data:
         data['notification_number'] = notification_number
 
-    await callback.message.answer(f'Вы изменяете напоминание:\n{notify}\nЧто именно вы ходите изменить?',
+    await callback.message.answer(f'Вы изменяете напоминание:\n{notify[3]}, {notify[4]}, {notify[2]}\nЧто именно вы ходите изменить?',
                                   reply_markup=get_what_to_change_kb())
     await UpdateNotificationsStateGroup.what_to_change.set()
     await callback.answer(f'{notification_number}')
-
-
-#  возвращаемся в главное меню
-@dp.message_handler(Text(equals="Вернуться в главное меню"), state='*')
-async def back_to_main_menu(message: types.Message, state: FSMContext) -> None:
-    await message.reply("Вы вернулись в главное меню",
-                        reply_markup=get_main_kb())
-    await state.finish()
 
 
 #  обновляем описание
 @dp.message_handler(Text(equals="Описание"), state=UpdateNotificationsStateGroup.what_to_change)
 async def update_description(message: types.Message) -> None:
     await message.reply("Введите новое описание для нопоминания",
-                        reply_markup=get_cancel_kb())
+                        reply_markup=get_back_kb())
     await UpdateNotificationsStateGroup.description.set()  # установили состояние описания
 
 
@@ -399,8 +391,12 @@ async def save_update_description(message: types.Message, state: FSMContext) -> 
 #  обновляем периодичность
 @dp.message_handler(Text(equals="Изменить периодичность"), state=UpdateNotificationsStateGroup.what_to_change)
 async def update_periodic(message: types.Message) -> None:
-    await message.reply("Введите тип периодичности",
-                        reply_markup=get_cancel_kb())
+    await message.reply("Введите тип периодичности:\n"
+                        "0 - дело не периодично\n"
+                        "1 - повтор каждый день\n"
+                        "2 - повтор каждую неделю\n"
+                        "3 - повтор каждый месяц",
+                        reply_markup=get_back_kb())
     await UpdateNotificationsStateGroup.periodic.set()  # установили состояние описания
 
 
@@ -444,7 +440,7 @@ async def save_update_calendar(callback_query: CallbackQuery, callback_data: dic
 @dp.message_handler(Text(equals="Время"), state=UpdateNotificationsStateGroup.what_to_change)
 async def update_time(message: types.Message) -> None:
     await message.reply("Введите новое время для нопоминания",
-                        reply_markup=get_cancel_kb())
+                        reply_markup=get_back_kb())
     await UpdateNotificationsStateGroup.time.set()  # установили состояние описания
 
 
@@ -520,12 +516,17 @@ async def update_files_new(message: types.Message, state: FSMContext) -> None:
         upload_file(f'{message.from_user.id}', f'{notification_number}',
                     f'files/{message.from_user.id}/{document.file_name}', f'{document.file_name}')
 
-    #  удаляем файлы из локальной директории
-    os.remove(f'files/{message.from_user.id}/{document.file_name}')
+        #  удаляем файлы из локальной директории
+        os.remove(f'files/{message.from_user.id}/{document.file_name}')
 
-    await bot.send_message(chat_id=message.from_user.id,
-                           text='Успешно! Файл загружен',
-                           reply_markup=get_main_kb())
+        await bot.send_message(chat_id=message.from_user.id,
+                               text='Успешно! Файл загружен',
+                               reply_markup=get_main_kb())
+
+    else:
+        await bot.send_message(chat_id=message.from_user.id,
+                               text='Данный файл уже прикреплен к напоминанию',
+                               reply_markup=get_main_kb())
     await state.finish()
 
 
@@ -535,9 +536,14 @@ async def update_files_delete(message: types.Message, state: FSMContext) -> None
         notification_number = data['notification_number']
     await bot.send_message(message.from_user.id, 'Секунду, подгружаем файлы...')
     list_of_files = get_list_of_files(message.from_user.id, notification_number)
-    await message.reply("Выберите, какой файл вы хотите удалить",
-                        reply_markup=get_ikb_with_filenames(list_of_files))
-    await UpdateNotificationsStateGroup.file.set()
+    if len(list_of_files) != 0:
+        await message.reply("Выберите, какой файл вы хотите удалить",
+                            reply_markup=get_ikb_with_filenames(list_of_files))
+        await UpdateNotificationsStateGroup.file.set()
+    else:
+        await message.reply("К задаче не прикреплено ни одного файла",
+                            reply_markup=get_main_kb())
+        await state.finish()
 
 
 @dp.callback_query_handler(state=UpdateNotificationsStateGroup.file)
@@ -545,6 +551,7 @@ async def delete_files_from_disk(callback: CallbackQuery, state: FSMContext):
     async with state.proxy() as data:
         notification_number = data['notification_number']
     await bot.send_message(chat_id=callback.from_user.id, text='Удаляем файл...')
+
     delete_files_from_google_disk(f'{callback.from_user.id}', f'{notification_number}', f'{callback.data}')
     await bot.send_message(chat_id=callback.from_user.id, text='Файл успено удалён!', reply_markup=get_main_kb())
     await state.finish()
@@ -594,6 +601,7 @@ async def notification_function():
     # выгружаем все задания, которые находятся в статусе "текущие"
     users = get_used_ids()
     for user_id in users:
+        user_id = list(user_id)[0]
         tasks = get_unsent_tasks(user_id)
         for task in tasks:
             # проверяем не наступила ли дата и время уведомления.

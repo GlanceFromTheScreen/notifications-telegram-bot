@@ -3,3 +3,4 @@ __pycache__/
 files/
 venv/
 new.db
+config.py
