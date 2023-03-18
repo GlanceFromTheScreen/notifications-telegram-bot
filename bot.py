@@ -2,16 +2,15 @@ from aiogram import types, executor, Bot, Dispatcher
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import StatesGroup, State
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
 from aiogram.dispatcher.filters import Text
 from aiogram_calendar import simple_cal_callback, SimpleCalendar
-from aiogram.types import Message, CallbackQuery, InputFile
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Message, CallbackQuery
+
+from keyboards import *
+from sqlite import *
 
 from config import TOKEN_API
-from sqlite import db_start, create_user_notifications_table, add_notification_in_table, get_undone_tasks, \
-    get_done_tasks, get_task_by_number, update_notification_field, delete_notification_field, get_used_ids, \
-    update_notification_field_by_number, get_unsent_tasks, get_last_notification
 import datetime
 from datetime import timedelta
 import aioschedule
@@ -23,13 +22,15 @@ from google_drive import create_folder_in_folder, is_directory_or_file_exists, u
 import os
 
 
+#  запуск бота каждые полминуты
 async def scheduler():
-    aioschedule.every(0.05).minutes.do(notification_function)
+    aioschedule.every(0.5).minutes.do(notification_function)
     while True:
         await aioschedule.run_pending()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
 
 
+#  пересчет дней для периодических дел
 def add_days(date, add_type):
     date0 = datetime.datetime.strptime(str(date), "%d/%m/%Y").date()
     if add_type == 1:
@@ -50,6 +51,7 @@ def add_days(date, add_type):
     return date
 
 
+#  сревнивает текущее время и дату с датой дела (пора ли отправлять?)
 def check_for_notification(date, project_time):
     if date:
         if '-' in date:
@@ -67,7 +69,9 @@ def check_for_notification(date, project_time):
         current_date_time = datetime.datetime.now()
         t2 = current_date_time.time()
 
-        if d2 >= d1 and t2 >= t1:
+        if d2 > d1:
+            return True
+        elif d2 == d1 and t2 >= t1:
             return True
         else:
             return False
@@ -85,7 +89,7 @@ dp = Dispatcher(bot,
 
 
 class NotificationStatesGroup(StatesGroup):
-    """машина конечных состояний бота"""
+    """машина конечных состояний бота. Основные состояния"""
     description = State()
     calendar = State()
     time = State()
@@ -93,6 +97,7 @@ class NotificationStatesGroup(StatesGroup):
 
 
 class UpdateNotificationsStateGroup(StatesGroup):
+    """машина конечных состояний бота. Состояния редактирования"""
     actual_tasks = State()
     done_tasks = State()
     what_to_change = State()
@@ -103,100 +108,18 @@ class UpdateNotificationsStateGroup(StatesGroup):
     periodic = State()
 
 
-def get_main_kb() -> ReplyKeyboardMarkup:
-    """
-    фабрика клавиатуры главного меню
-    :return:
-    """
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('Добавить напоминание'), KeyboardButton('Редактировать текущие дела')) \
-        .add(KeyboardButton('Посмотреть запланированные дела'), KeyboardButton('Посмотреть завершенные дела'))
-    return kb
-
-
-def get_file_kb() -> ReplyKeyboardMarkup:
-    """
-    фабрика клавиатуры главного меню
-    :return:
-    """
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('Файлы не требуются'))
-
-    return kb
-
-
-def get_what_to_change_kb() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('Описание'), KeyboardButton('Файлы')) \
-        .add(KeyboardButton('Дата'), KeyboardButton('Время')) \
-        .add(KeyboardButton('Отметить как выполненное'), KeyboardButton('Изменить периодичность')) \
-        .add(KeyboardButton('Удалить напоминание'), KeyboardButton('Вернуться в главное меню'))
-
-    return kb
-
-
-def get_files_update_kb() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('Добавить новый'), KeyboardButton('Удалить имеющийся')) \
-        .add(KeyboardButton('Вернуться в главное меню'))
-
-    return kb
-
-
-def get_done_tasks_kb() -> ReplyKeyboardMarkup:
-    """
-    фабрика клавиатуры главного меню
-    :return:
-    """
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('Вернуть дело в незавершенное'), KeyboardButton('Вернуться в главное меню'))
-
-    return kb
-
-
-def get_back_kb() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton('Вернуться в главное меню'))
-
-    return kb
-
-
-def get_ikb_with_notifications(list_of_notifications: list) -> InlineKeyboardMarkup:
-    ikb = InlineKeyboardMarkup(row_width=2)
-    for i in range(len(list_of_notifications)):
-        noty = list_of_notifications[i][1] + list_of_notifications[i][2] + list_of_notifications[i][3]
-        ikb.add(InlineKeyboardButton(text=f'{noty}',
-                                     callback_data=f'{list_of_notifications[i][0]}'))
-    return ikb
-
-
-def get_ikb_with_filenames(list_of_files: list) -> InlineKeyboardMarkup:
-    ikb = InlineKeyboardMarkup(row_width=2)
-    for i in range(len(list_of_files)):
-        ikb.add(InlineKeyboardButton(text=f'{list_of_files[i]}',
-                                     callback_data=f'{list_of_files[i]}'))
-    return ikb
-
-
 #  обработчик первой команды start
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message) -> None:
     await message.answer('To-Do List Application!',
                          reply_markup=get_main_kb())
-
-    # #  выгружаем файлы
-    # titles = get_list_of_files('497684582', '13')
-    # # await bot.send_document(message.from_user.id, f'files/{message.from_user.id}/mish.png')
-    # # await message.answer_document(open(f'files/{message.from_user.id}/mish.png', "RB"))
-    # await message.answer_document(InputFile(f'files/{message.from_user.id}/{titles[0]}'))
-
     await create_user_notifications_table(user_id=message.from_user.id)  # см. sqlite - file
 
 
-#  возвращаемся в главное меню
+#  возврат в главное меню
 @dp.message_handler(Text(equals="Вернуться в главное меню"), state='*')
 async def back_to_main_menu(message: types.Message, state: FSMContext) -> None:
-    await message.reply("Вы вернулись в главное меню",
+    await message.answer("Вы вернулись в главное меню",
                         reply_markup=get_main_kb())
     await state.finish()
 
@@ -207,8 +130,7 @@ async def back_to_main_menu(message: types.Message, state: FSMContext) -> None:
 #  обработчик команды "Добавить напонинание"
 @dp.message_handler(Text(equals="Добавить напоминание"))
 async def cmd_add_notify(message: types.Message) -> None:
-    """Обработчик сообщения Добавить напоминание"""
-    await message.reply("Введите текст напоминания",
+    await message.answer("Введите текст напоминания",
                         reply_markup=get_back_kb())
     await NotificationStatesGroup.description.set()  # установили состояние описания
 
@@ -220,7 +142,7 @@ async def load_description(message: types.Message, state: FSMContext) -> None:
         data['description'] = message.text
 
     await message.answer("Теперь выберите дату: ",
-                         reply_markup=await SimpleCalendar().start_calendar())
+                         reply_markup=await SimpleCalendar().start_calendar())  # клавиатура с календарем
     await NotificationStatesGroup.calendar.set()
 
 
@@ -232,10 +154,11 @@ async def load_calendar(callback_query: CallbackQuery, callback_data: dict, stat
         data_dict['calendar'] = date.strftime("%d/%m/%Y")
     if selected:
         await callback_query.message.answer(
-            f'Вы выбрали дату: {date.strftime("%d/%m/%Y")} \n Теперь введите время',
+            f'Вы выбрали дату: {date.strftime("%d/%m/%Y")} \n Теперь введите время в формате HH:MM',
             reply_markup=get_back_kb()
         )
     await NotificationStatesGroup.time.set()
+    await callback_query.message.delete()
 
 
 #  обработчик времени
@@ -244,20 +167,25 @@ async def load_time(message: types.Message, state: FSMContext) -> None:
     async with state.proxy() as data:
         data['time'] = message.text
 
+    if not check_for_notification(data['calendar'], data['time']):
     #  добавляем запись в таблицу на этом этапе! Тогда устанавливается и номер в бд
-    await add_notification_in_table(state, user_id=message.from_user.id)
-    # await message.reply('Напоминание слоздано!', reply_markup=get_main_kb())
-    # await state.finish()
-    await message.reply('Время зафиксировано! Теперь добавьте файлы', reply_markup=get_file_kb())
-    await NotificationStatesGroup.file.set()
+        await add_notification_in_table(state, user_id=message.from_user.id)
+        await message.answer(f'Время зафиксировано: {message.text} Теперь добавьте файлы', reply_markup=get_file_kb())
+        await NotificationStatesGroup.file.set()
+        await message.delete()
+    else:
+        await message.answer('Пожалуйста выбирайте будущие дату и время', reply_markup=await SimpleCalendar().start_calendar())
+        await NotificationStatesGroup.calendar.set()
+        await message.delete()
 
 
 #  обработчик отсутствия файлов
 @dp.message_handler(Text(equals="Файлы не требуются"), state=NotificationStatesGroup.file)
 async def load_no_file(message: types.Message, state: FSMContext) -> None:
     # await add_notification_in_table(state, user_id=message.from_user.id)  # это здесь уже не нужно, получается
-    await message.reply('Напоминание слоздано!', reply_markup=get_main_kb())
+    await message.answer('Напоминание создано!', reply_markup=get_main_kb())
     await state.finish()
+    await message.delete()
 
 
 # обработчик файлов: загрузка их сначала в локальную директорию
@@ -270,7 +198,6 @@ async def load_no_file(message: types.Message, state: FSMContext) -> None:
 async def load_file(message: types.Message, state: FSMContext) -> None:
     if document := message.document:
         await document.download(
-            # destination_dir=f"files/{message.from_user.id}",
             destination_file=f"files/{message.from_user.id}/{document.file_name}",
         )
 
@@ -286,18 +213,17 @@ async def load_file(message: types.Message, state: FSMContext) -> None:
     create_folder_in_folder(f'{message.from_user.id}', f'{this_notify[0]}')
 
     if not is_directory_or_file_exists(f'{this_notify[0]}', f'{document.file_name}'):
-        # upload_file(f'{document.file_name}', f'files/{message.from_user.id}/{this_notify[0]}')
         upload_file(f'{message.from_user.id}', f'{this_notify[0]}', f'files/{message.from_user.id}/{document.file_name}', f'{document.file_name}')
 
         #  удаляем файлы из локальной директории
         os.remove(f'files/{message.from_user.id}/{document.file_name}')
 
         await bot.send_message(chat_id=message.from_user.id,
-                               text='Успешно! Файл загружен',
+                               text='Файл загружен. Напоминание создано',
                                reply_markup=get_main_kb())
     else:
         await bot.send_message(chat_id=message.from_user.id,
-                               text='Данный файл уже прикреплен к напоминанию',
+                               text='Данный файл уже прикреплен к напоминанию. Напоминание создано',
                                reply_markup=get_main_kb())
     await state.finish()
 
@@ -367,6 +293,7 @@ async def callback_check_actual_tasks(callback: types.CallbackQuery, state: FSMC
                                   reply_markup=get_what_to_change_kb())
     await UpdateNotificationsStateGroup.what_to_change.set()
     await callback.answer(f'{notification_number}')
+    await callback.message.delete()
 
 
 #  обновляем описание
@@ -425,14 +352,20 @@ async def save_update_calendar(callback_query: CallbackQuery, callback_data: dic
     selected, date = await SimpleCalendar().process_selection(callback_query, callback_data)
     new_date = date.strftime("%d/%m/%Y")
     if selected:
-        await update_notification_field(state, user_id=callback_query.from_user.id, field_data=new_date,
-                                        field_name='calendar')
-        #  после обновления напоминания его надо будет отправить еще раз
-        await update_notification_field(state, user_id=callback_query.from_user.id, field_data=0, field_name='is_Sent')
-        await callback_query.message.answer(
-            f'Вы изменили дату: {date.strftime("%d/%m/%Y")}',
-            reply_markup=get_main_kb()
-        )
+        if not check_for_notification(new_date, '01:00'):
+            await update_notification_field(state, user_id=callback_query.from_user.id, field_data=new_date,
+                                            field_name='calendar')
+            #  после обновления напоминания его надо будет отправить еще раз
+            await update_notification_field(state, user_id=callback_query.from_user.id, field_data=0, field_name='is_Sent')
+            await callback_query.message.answer(
+                f'Вы изменили дату: {date.strftime("%d/%m/%Y")}',
+                reply_markup=get_main_kb()
+            )
+        else:
+            await callback_query.message.answer(
+                'Нельзя выставить прошедшую дату',
+                reply_markup=get_main_kb()
+            )
     await state.finish()
 
 
@@ -441,7 +374,7 @@ async def save_update_calendar(callback_query: CallbackQuery, callback_data: dic
 async def update_time(message: types.Message) -> None:
     await message.reply("Введите новое время для нопоминания",
                         reply_markup=get_back_kb())
-    await UpdateNotificationsStateGroup.time.set()  # установили состояние описания
+    await UpdateNotificationsStateGroup.time.set()
 
 
 @dp.message_handler(content_types=['text'], state=UpdateNotificationsStateGroup.time)
@@ -492,7 +425,7 @@ async def update_files_new(message: types.Message) -> None:
 @dp.message_handler(content_types=types.ContentTypes.DOCUMENT, state=UpdateNotificationsStateGroup.file)
 async def update_files_new(message: types.Message, state: FSMContext) -> None:
     """
-    Тут код почти полностью повторяет код другой функции. Это надо по-хорошему потому убрать
+    Тут код почти полностью повторяет код другой функции. Это надо по-хорошему потому убрать. Хотя нормально
     """
     if document := message.document:
         await document.download(
@@ -610,7 +543,7 @@ async def notification_function():
                 #  выгружаем файлы
                 titles = get_list_of_files(f'{user_id}', f'{task[0]}')
 
-                await bot.send_message(chat_id=user_id, text=f"У вас запланировано важное дело - {task[2]}")
+                await bot.send_message(chat_id=user_id, text=f"⛳️Напоминание\n {task[2]}")
 
                 for i in range(len(titles)):
                     await bot.send_document(user_id, (f'{titles[i]}', f'files/{user_id}/{titles[i]}'))
@@ -623,12 +556,10 @@ async def notification_function():
                                                               field_name='is_Sent')
                 else:
                     # вычисляем новую дату для уведомления у периодических дел
-                    # date_culc = select_date_task_for_periodic(task[0], task[1])
                     new_date = add_days(task[3], task[6])
                     await update_notification_field_by_number(number=task[0], user_id=user_id, field_data=new_date,
                                                               field_name='calendar')
-                    # #обнавляем дату периодического дела
-                    # await update_date_task_for_pereodic(task[0], task[1], res_date)
+
 
 
 if __name__ == '__main__':

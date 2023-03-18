@@ -133,11 +133,4 @@ def delete_files_from_google_disk(root_folder1, root_folder2, deliting_file):
     return False
 
 
-# create_folder('root', 'cat2', GoogleDrive(gauth))
-# create_folder_in_folder('1', '6')
-# upload_file('mish.png', 'files/497684582', 'files/497684582')
-# is_directory_or_file_exists('files', 'mdDinRxBMko.jpg')
-# upload_file('497684582', '9', 'files/497684582/mish.png')
-# l = get_list_of_files('497684582', '12')
-# print(l)
-# delete_files_from_google_disk('497684582', '17', 'readme.md')
+
